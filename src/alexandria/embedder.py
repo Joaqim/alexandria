@@ -27,21 +27,26 @@ class Embedder:
     def embed_batch(self, texts: list[str], batch_size: int = 64) -> list[list[float]]:
         """Embed a batch of texts. Returns list of vectors.
 
-        Sends each text individually to Ollama to avoid hitting the
-        per-request token limit.  Individual calls are simple and
-        reliable; the Ollama server already handles concurrent model
-        inference efficiently.
+        Sends texts to Ollama in sub-batches using the native batch API
+        (``input=list[str]``).  This is dramatically faster than
+        one-at-a-time because each HTTP round-trip embeds up to
+        *batch_size* texts in a single model invocation.
+
+        Args:
+            texts: The texts to embed.
+            batch_size: Max texts per Ollama request.  Defaults to 64.
         """
         all_embeddings: list[list[float]] = []
-        for i, text in enumerate(texts):
-            response = self.client.embed(model=self.model, input=text)
+        for i in range(0, len(texts), batch_size):
+            batch = texts[i : i + batch_size]
+            response = self.client.embed(model=self.model, input=batch)
             embeddings = response.get("embeddings", [])
-            if not embeddings:
+            if len(embeddings) != len(batch):
                 raise RuntimeError(
-                    f"Ollama returned no embeddings for item {i} "
-                    f"({len(text)} chars)"
+                    f"Ollama returned {len(embeddings)} embeddings "
+                    f"for a batch of {len(batch)} texts (offset {i})"
                 )
-            all_embeddings.append(embeddings[0])
+            all_embeddings.extend(embeddings)
         return all_embeddings
 
     def is_available(self) -> bool:
@@ -51,8 +56,7 @@ class Embedder:
             model_names = [m.model for m in models.models]
             # Model names may include tags like ":latest"
             return any(
-                self.model in name or name.startswith(f"{self.model}:")
-                for name in model_names
+                self.model in name or name.startswith(f"{self.model}:") for name in model_names
             )
         except Exception:
             return False

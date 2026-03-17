@@ -8,7 +8,7 @@ from pathlib import Path
 
 import click
 from rich.console import Console
-from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, MofNCompleteColumn
+from rich.progress import BarColumn, MofNCompleteColumn, Progress, SpinnerColumn, TextColumn
 from rich.table import Table
 
 from alexandria.config import Config
@@ -24,11 +24,27 @@ def main() -> None:
 
 @main.command()
 @click.option("--context", "-c", required=True, help="Name for this index context.")
-@click.option("--chunk-lines", default=50, show_default=True, help="Lines per chunk (sliding window).")
-@click.option("--chunk-overlap", default=10, show_default=True, help="Overlap lines between chunks.")
+@click.option(
+    "--chunk-lines",
+    default=50,
+    show_default=True,
+    help="Lines per chunk (sliding window).",
+)
+@click.option(
+    "--chunk-overlap",
+    default=10,
+    show_default=True,
+    help="Overlap lines between chunks.",
+)
 @click.option("--follow-symlinks", is_flag=True, default=False, help="Follow symbolic links.")
 @click.argument("path", type=click.Path(exists=True, file_okay=False))
-def index(context: str, chunk_lines: int, chunk_overlap: int, follow_symlinks: bool, path: str) -> None:
+def index(
+    context: str,
+    chunk_lines: int,
+    chunk_overlap: int,
+    follow_symlinks: bool,
+    path: str,
+) -> None:
     """Index a codebase into a named vector database context."""
     from alexandria.chunker import chunk_file
     from alexandria.discovery import discover_files
@@ -46,13 +62,13 @@ def index(context: str, chunk_lines: int, chunk_overlap: int, follow_symlinks: b
     # Verify services
     store = Store(config)
     if not store.is_available():
-        console.print("[red]Error:[/red] Cannot connect to Qdrant at {}.".format(config.qdrant_url))
+        console.print(f"[red]Error:[/red] Cannot connect to Qdrant at {config.qdrant_url}.")
         console.print("Start Qdrant first: [bold]qdrant[/bold]")
         sys.exit(1)
 
     embedder = Embedder(config)
     if not embedder.is_available():
-        console.print("[red]Error:[/red] Ollama model '{}' not available.".format(config.embed_model))
+        console.print(f"[red]Error:[/red] Ollama model '{config.embed_model}' not available.")
         console.print("Run: [bold]alexandria setup[/bold]")
         sys.exit(1)
 
@@ -85,13 +101,28 @@ def index(context: str, chunk_lines: int, chunk_overlap: int, follow_symlinks: b
         console.print("[green]All files up to date.[/green] Nothing to index.")
         return
 
-    console.print(f"  Indexing [cyan]{len(files_to_index)}[/cyan] files into context [bold]{context}[/bold]")
+    console.print(
+        f"  Indexing [cyan]{len(files_to_index)}[/cyan] files into context [bold]{context}[/bold]"
+    )
 
-    # Phase 1: Chunk all files
+    # Stream: chunk → embed → store in batches.
+    # Instead of accumulating all chunks, then all vectors, then storing,
+    # we process files in groups, embed each batch, and upsert immediately.
+    # This reduces peak memory and overlaps work.
     from alexandria.chunker import Chunk
 
-    all_chunks: list[Chunk] = []
+    embed_batch_size = 64
+    total_chunks_stored = 0
     files_with_chunks = 0
+    chunk_buffer: list[Chunk] = []
+
+    def _flush_buffer(chunks: list[Chunk]) -> int:
+        """Embed and store a buffer of chunks. Returns count stored."""
+        if not chunks:
+            return 0
+        texts = [c.text for c in chunks]
+        vectors = embedder.embed_batch(texts, batch_size=embed_batch_size)
+        return store.upsert_chunks(context, chunks, vectors)
 
     with Progress(
         SpinnerColumn(),
@@ -100,7 +131,7 @@ def index(context: str, chunk_lines: int, chunk_overlap: int, follow_symlinks: b
         MofNCompleteColumn(),
         console=console,
     ) as progress:
-        task = progress.add_task("Chunking files...", total=len(files_to_index))
+        task = progress.add_task("Indexing files...", total=len(files_to_index))
         for f in files_to_index:
             rel = str(f.relative_to(repo_root))
             # Delete old points for this file before re-indexing
@@ -109,52 +140,32 @@ def index(context: str, chunk_lines: int, chunk_overlap: int, follow_symlinks: b
 
             chunks = chunk_file(f, config, repo_root)
             if chunks:
-                all_chunks.extend(chunks)
+                chunk_buffer.extend(chunks)
                 files_with_chunks += 1
+
+            # Flush when the buffer is large enough for an efficient embed call
+            if len(chunk_buffer) >= embed_batch_size:
+                total_chunks_stored += _flush_buffer(chunk_buffer)
+                desc = f"Indexing files... ({total_chunks_stored} chunks)"
+                progress.update(task, description=desc)
+                chunk_buffer = []
+
             progress.advance(task)
 
-    console.print(f"  Produced [cyan]{len(all_chunks)}[/cyan] chunks from [cyan]{files_with_chunks}[/cyan] files")
+        # Flush remaining chunks
+        total_chunks_stored += _flush_buffer(chunk_buffer)
 
-    if not all_chunks:
-        console.print("[yellow]Warning:[/yellow] No chunks produced. Nothing to embed.")
-        return
-
-    # Phase 2: Embed all chunks
-    texts = [c.text for c in all_chunks]
-    with Progress(
-        SpinnerColumn(),
-        TextColumn("[progress.description]{task.description}"),
-        BarColumn(),
-        MofNCompleteColumn(),
-        console=console,
-    ) as progress:
-        task = progress.add_task("Embedding chunks...", total=len(texts))
-        vectors: list[list[float]] = []
-        batch_size = 64
-        for i in range(0, len(texts), batch_size):
-            batch = texts[i : i + batch_size]
-            batch_vectors = embedder.embed_batch(batch, batch_size=len(batch))
-            vectors.extend(batch_vectors)
-            progress.advance(task, len(batch))
-
-    # Phase 3: Store in Qdrant
-    with Progress(
-        SpinnerColumn(),
-        TextColumn("[progress.description]{task.description}"),
-        console=console,
-    ) as progress:
-        task = progress.add_task("Storing vectors...")
-        n_stored = store.upsert_chunks(context, all_chunks, vectors)
-        progress.advance(task)
-
-    console.print(f"\n[green]Done![/green] Indexed [bold]{n_stored}[/bold] chunks into context [cyan]{context}[/cyan]")
+    console.print(
+        f"\n[green]Done![/green] Indexed [bold]{total_chunks_stored}[/bold] chunks "
+        f"from [cyan]{files_with_chunks}[/cyan] files into context [cyan]{context}[/cyan]"
+    )
 
 
 @main.command()
 def serve() -> None:
     """Start the MCP server (stdio transport)."""
-    import sys
     from rich.console import Console as RichConsole
+
     from alexandria.mcp_server import run_stdio
 
     # MCP stdio server writes to stdout, so only log to stderr

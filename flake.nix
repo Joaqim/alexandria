@@ -249,9 +249,15 @@
             QDRANT_URL = "http://localhost:6333";
             OLLAMA_HOST = "http://localhost:11434";
             ALEXANDRIA_DEV = "1";
+
+
           };
 
           shellHook = ''
+            # Make the src-layout package importable without pip install -e.
+            # Uses the live working tree so edits are reflected immediately.
+            export PYTHONPATH="$PWD/src''${PYTHONPATH:+:$PYTHONPATH}"
+
             echo "Alexandria dev shell"
             echo "  Python:  $(python3 --version)"
             echo "  Qdrant:  $(qdrant --version 2>/dev/null || echo 'available')"
