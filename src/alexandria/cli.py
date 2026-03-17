@@ -231,6 +231,7 @@ def setup() -> None:
         console.print("[red]FAILED[/red]")
         console.print(f"  Cannot connect to Qdrant at {config.qdrant_url}")
         console.print("  Start Qdrant: [bold]qdrant[/bold]")
+        sys.exit(1)
 
     # Check Ollama and pull model
     console.print(f"[bold]Checking Ollama model '{config.embed_model}'...[/bold]", end=" ")

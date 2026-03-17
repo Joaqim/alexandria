@@ -14,11 +14,6 @@
           cfg = config.services.alexandria;
           alexPkg = self.packages.${pkgs.system}.default;
 
-          # The OCI backend determines the systemd unit name for the container.
-          # NixOS uses podman by default; docker users override this.
-          ociBackend = config.virtualisation.oci-containers.backend;
-          qdrantUnit = "${ociBackend}-alexandria-qdrant.service";
-
           # Common environment for all Alexandria services
           alexandriaEnv = {
             QDRANT_URL = "http://localhost:${toString cfg.qdrant.port}";
@@ -68,18 +63,6 @@
                 default = 6334;
                 description = "Port for Qdrant gRPC API.";
               };
-
-              dataDir = lib.mkOption {
-                type = lib.types.path;
-                default = "/var/lib/alexandria/qdrant";
-                description = "Directory for Qdrant data storage.";
-              };
-
-              image = lib.mkOption {
-                type = lib.types.str;
-                default = "qdrant/qdrant:v1.13.2";
-                description = "Qdrant OCI image to use.";
-              };
             };
 
             ollama = {
@@ -118,45 +101,41 @@
             # Put alex on the system PATH
             environment.systemPackages = [ alexPkg ];
 
-            # Qdrant via OCI container
-            virtualisation.oci-containers.containers.alexandria-qdrant = {
-              image = cfg.qdrant.image;
-              ports = [
-                "${toString cfg.qdrant.port}:6333"
-                "${toString cfg.qdrant.grpcPort}:6334"
-              ];
-              volumes = [
-                "${cfg.qdrant.dataDir}:/qdrant/storage"
-              ];
+            # Qdrant via upstream NixOS module (native systemd service)
+            services.qdrant = {
+              enable = true;
+              settings = {
+                service = {
+                  host = "127.0.0.1";
+                  http_port = cfg.qdrant.port;
+                  grpc_port = cfg.qdrant.grpcPort;
+                };
+              };
             };
 
             # Ollama (upstream NixOS module)
             services.ollama.enable = true;
 
-            # Oneshot: pull embedding model after Ollama + Qdrant are up
+            # Oneshot: wait for Qdrant + Ollama, then pull the embedding model
+            # Uses `alex setup` which verifies both services and pulls the model
             # Plus concrete indexer services (one per configured index)
             systemd.services = {
               alexandria-setup = {
                 description = "Alexandria setup — pull Ollama embedding model and verify Qdrant";
-                after = [ "ollama.service" qdrantUnit ];
-                requires = [ "ollama.service" qdrantUnit ];
+                after = [ "ollama.service" "qdrant.service" ];
+                requires = [ "ollama.service" "qdrant.service" ];
                 wantedBy = [ "multi-user.target" ];
                 environment = alexandriaEnv;
                 serviceConfig = {
                   Type = "oneshot";
                   RemainAfterExit = true;
-                  ExecStart = "${pkgs.ollama}/bin/ollama pull ${cfg.ollama.model}";
+                  ExecStart = "${alexPkg}/bin/alex setup";
                 };
               };
             } // indexerServices;
 
             # Timers for periodic re-indexing
             systemd.timers = indexerTimers;
-
-            # Ensure data directory exists
-            systemd.tmpfiles.rules = [
-              "d ${cfg.qdrant.dataDir} 0750 root root -"
-            ];
           };
         };
     in
