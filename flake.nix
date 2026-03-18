@@ -196,6 +196,97 @@
             systemd.timers = indexerTimers;
           };
         };
+      # Home Manager module — installs alex and sets session env vars
+      homeManagerModule = { config, lib, pkgs, ... }:
+        let
+          cfg = config.programs.alexandria;
+          alexPkg = self.packages.${pkgs.system}.default;
+        in
+        {
+          options.programs.alexandria = {
+            enable = lib.mkEnableOption "Alexandria semantic code search";
+
+            package = lib.mkOption {
+              type = lib.types.package;
+              default = alexPkg;
+              defaultText = lib.literalExpression "alexandria.packages.\${pkgs.system}.default";
+              description = "The Alexandria package to install.";
+            };
+
+            qdrantUrl = lib.mkOption {
+              type = lib.types.str;
+              default = "http://localhost:6333";
+              description = "URL of the Qdrant instance.";
+            };
+
+            ollamaHost = lib.mkOption {
+              type = lib.types.str;
+              default = "http://localhost:11434";
+              description = "URL of the Ollama instance.";
+            };
+
+            embed = {
+              backend = lib.mkOption {
+                type = lib.types.enum [ "ollama" "openai" ];
+                default = "ollama";
+                description = ''
+                  Embedding backend. "ollama" uses a local Ollama instance;
+                  "openai" uses any OpenAI-compatible API (e.g. GitHub Models).
+                '';
+              };
+
+              model = lib.mkOption {
+                type = lib.types.str;
+                default = "nomic-embed-text";
+                description = "Embedding model name.";
+              };
+
+              apiUrl = lib.mkOption {
+                type = lib.types.str;
+                default = "https://models.github.ai/inference";
+                description = ''
+                  OpenAI-compatible embedding API URL.
+                  Only used when embed.backend is "openai".
+                '';
+              };
+
+              dim = lib.mkOption {
+                type = lib.types.int;
+                default = 0;
+                description = ''
+                  Embedding dimensions. Set to 0 to auto-detect from
+                  the model name (e.g. 768 for nomic-embed-text, 1536
+                  for text-embedding-3-small).
+                '';
+              };
+            };
+
+            extraEnv = lib.mkOption {
+              type = lib.types.attrsOf lib.types.str;
+              default = { };
+              description = ''
+                Additional environment variables to set for Alexandria.
+                These are merged into home.sessionVariables.
+              '';
+              example = {
+                ALEXANDRIA_MAX_CHUNK_CHARS = "6000";
+              };
+            };
+          };
+
+          config = lib.mkIf cfg.enable {
+            home.packages = [ cfg.package ];
+
+            home.sessionVariables = {
+              QDRANT_URL = cfg.qdrantUrl;
+              OLLAMA_HOST = cfg.ollamaHost;
+              ALEXANDRIA_EMBED_BACKEND = cfg.embed.backend;
+              ALEXANDRIA_EMBED_MODEL = cfg.embed.model;
+              ALEXANDRIA_EMBED_API_URL = cfg.embed.apiUrl;
+              ALEXANDRIA_EMBED_DIM = toString cfg.embed.dim;
+            } // cfg.extraEnv;
+          };
+        };
     in
     (flake-utils.lib.eachDefaultSystem (system:
       let
@@ -333,5 +424,6 @@
     )) // {
       # System-independent outputs
       nixosModules.default = nixosModule;
+      homeManagerModules.default = homeManagerModule;
     };
 }
