@@ -80,6 +80,15 @@
               };
             };
 
+            mcpProxy = {
+              enable = lib.mkEnableOption "Enables MCP proxy server for OpenAI http API access.";
+              port = lib.mkOption {
+                type = lib.types.port;
+                default = 57174;
+                description = "Port for mcp-proxy.";
+              };
+            };
+
             environmentFile = lib.mkOption {
               type = lib.types.nullOr lib.types.path;
               default = null;
@@ -178,28 +187,50 @@
             # Ollama — only needed for the ollama embedding backend
             services.ollama.enable = lib.mkDefault (cfg.embed.backend == "ollama");
 
-            # Oneshot: verify Qdrant (and Ollama when applicable), pull model
-            # Uses `alex setup` which handles both backends automatically
-            # Plus concrete indexer services (one per configured index)
-            systemd.services = {
-              alexandria-setup = {
-                description = "Alexandria setup — verify services and configure embedding model";
-                after = [ "qdrant.service" ]
-                  ++ lib.optionals (cfg.embed.backend == "ollama") [ "ollama.service" ];
-                requires = [ "qdrant.service" ]
-                  ++ lib.optionals (cfg.embed.backend == "ollama") [ "ollama.service" ];
-                wantedBy = [ "multi-user.target" ];
-                environment = alexandriaEnv;
-                serviceConfig = {
-                  Type = "oneshot";
-                  RemainAfterExit = true;
-                  ExecStart = "${lib.getExe cfg.package} setup";
-                } // envFileAttrs;
-              };
-            } // indexerServices;
+            systemd = {
+              services = {
+                # MCP Proxy - allows http protocol to our stdio instanced alexandria
+                alexandria-mcp = lib.mkIf cfg.mcpProxy.enable {
+                  after = [ "network.target" ];
+                  wantedBy = [ "multi-user.target" ];
+                  description = "Alexandria running with MCP Proxy - allows using OpenAI's http protocol to our stdio instanced alexandria";
+                  serviceConfig = {
+                    Type = "simple";
+                    ExecStart = ''
+                      ${lib.getExe pkgs.mcp-proxy} \
+                        --host 127.0.0.1 \
+                        --port ${toString cfg.mcpProxy.port} \
+                        --transport streamablehttp \
+                        -- ${lib.getExe cfg.package} serve
+                    '';
+                    # TODO: Add optional environment variable API_ACCESS_TOKEN & `--pass-environment`
+                    Restart = "no";
+                  };
+                };
 
-            # Timers for periodic re-indexing
-            systemd.timers = indexerTimers;
+                # Oneshot: verify Qdrant (and Ollama when applicable), pull model
+                # Uses `alex setup` which handles both backends automatically
+                # Plus concrete indexer services (one per configured index)
+                alexandria-setup = {
+                  description = "Alexandria setup — verify services and configure embedding model";
+                  after = [ "qdrant.service" ] ++ lib.optionals (cfg.embed.backend == "ollama") [ "ollama.service" ];
+                  requires = [
+                    "qdrant.service"
+                  ]
+                  ++ lib.optionals (cfg.embed.backend == "ollama") [ "ollama.service" ];
+                  wantedBy = [ "multi-user.target" ];
+                  environment = alexandriaEnv;
+                  serviceConfig = {
+                    Type = "oneshot";
+                    RemainAfterExit = true;
+                    ExecStart = "${lib.getExe cfg.package} setup";
+                  } // envFileAttrs;
+                };
+              } // indexerServices;
+
+              # Timers for periodic re-indexing
+              timers = indexerTimers;
+            };
           };
         };
       # Home Manager module — installs alex and sets session env vars
@@ -295,6 +326,7 @@
               servers."alexandria" = {
                 command = "alex";
                 args = [ "serve" ];
+                transportType = "stdio";
               };
             };
 
