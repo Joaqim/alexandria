@@ -445,6 +445,7 @@
     )) // {
       # System-independent outputs
       nixosModules.default = nixosModule;
-      homeManagerModules.default = homeManagerModule;
+      homeManagerModules.default = nixpkgs.lib.warn "`homeManagerModules` is deprecated. Use `homeModules` instead." homeManagerModule;
+      homeModules.default = homeManagerModule;
     };
 }
