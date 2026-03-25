@@ -12,7 +12,6 @@
       nixosModule = { config, lib, pkgs, ... }:
         let
           cfg = config.services.alexandria;
-          alexPkg = self.packages.${pkgs.system}.default;
 
           # Common environment for all Alexandria services
           alexandriaEnv = {
@@ -38,7 +37,7 @@
               environment = alexandriaEnv;
               serviceConfig = {
                 Type = "oneshot";
-                ExecStart = "${alexPkg}/bin/alex index --context ${name} ${toString indexCfg.path}";
+                ExecStart = "${lib.getExe cfg.package} index --context ${name} ${toString indexCfg.path}";
               } // envFileAttrs;
             }
           ) cfg.indexes;
@@ -59,6 +58,13 @@
         {
           options.services.alexandria = {
             enable = lib.mkEnableOption "Alexandria semantic code search";
+
+            package = lib.mkOption {
+              type = lib.types.package;
+              default = self.packages.${pkgs.stdenv.hostPlatform.system}.alexandria;
+              defaultText = lib.literalExpression "alexandria.packages.\${pkgs.stdenv.hostPlatform.system}.default";
+              description = "The Alexandria package to install.";
+            };
 
             qdrant = {
               port = lib.mkOption {
@@ -155,7 +161,7 @@
 
           config = lib.mkIf cfg.enable {
             # Put alex on the system PATH
-            environment.systemPackages = [ alexPkg ];
+            environment.systemPackages = [ cfg.package ];
 
             # Qdrant via upstream NixOS module (native systemd service)
             services.qdrant = {
@@ -187,7 +193,7 @@
                 serviceConfig = {
                   Type = "oneshot";
                   RemainAfterExit = true;
-                  ExecStart = "${alexPkg}/bin/alex setup";
+                  ExecStart = "${lib.getExe cfg.package} setup";
                 } // envFileAttrs;
               };
             } // indexerServices;
@@ -200,7 +206,6 @@
       homeManagerModule = { config, lib, pkgs, ... }:
         let
           cfg = config.programs.alexandria;
-          alexPkg = self.packages.${pkgs.system}.default;
         in
         {
           options.programs.alexandria = {
@@ -208,8 +213,8 @@
 
             package = lib.mkOption {
               type = lib.types.package;
-              default = alexPkg;
-              defaultText = lib.literalExpression "alexandria.packages.\${pkgs.system}.default";
+              default = self.packages.${pkgs.stdenv.hostPlatform.system}.default;
+              defaultText = lib.literalExpression "alexandria.packages.\${pkgs.stdenv.hostPlatform.system}.default";
               description = "The Alexandria package to install.";
             };
 
