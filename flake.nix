@@ -218,6 +218,14 @@
               description = "The Alexandria package to install.";
             };
 
+            enableMcpIntegration = lib.mkOption {
+              type = lib.types.bool;
+              default = true;
+              description = ''
+                Whether to automatically enable MCP package and add MCP server configuration.
+              '';
+            };
+
             qdrantUrl = lib.mkOption {
               type = lib.types.str;
               default = "http://localhost:6333";
@@ -281,6 +289,14 @@
 
           config = lib.mkIf cfg.enable {
             home.packages = [ cfg.package ];
+
+            programs.mcp = lib.mkIf cfg.enableMcpIntegration {
+              enable = lib.mkDefault true;
+              servers."alexandria" = {
+                command = "alex";
+                args = [ "serve" ];
+              };
+            };
 
             home.sessionVariables = {
               QDRANT_URL = cfg.qdrantUrl;
